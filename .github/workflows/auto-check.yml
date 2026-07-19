@@ -1,0 +1,100 @@
+%%writefile .github/workflows/auto-check.yml
+name: 🤖 Автопроверка лабораторной работы (Generative AI)
+
+on:
+  pull_request:
+    branches: [ main, master ]
+    types: [opened, synchronize, reopened]
+
+jobs:
+  check-lab-submission:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout кода
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: ⚙️ Настройка Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 🔍 Запуск статического анализа кода и структуры
+        id: checks
+        run: |
+          echo "🔎 Начинаем проверку соответствия компетенциям..."
+          
+          # 1. Проверка наличия отчета или ноутбука (ПК-9.2)
+          REPORT_FOUND=$(find . -type f \( -iname "report.md" -o -iname "отчет.md" -o -iname "*.ipynb" \) | grep -v ".github" | wc -l)
+          if [ "$REPORT_FOUND" -gt 0 ]; then
+            echo "has_report=true" >> $GITHUB_OUTPUT
+            echo "✅ Отчет/Ноутбук найден"
+          else
+            echo "has_report=false" >> $GITHUB_OUTPUT
+            echo "❌ Отчет или Jupyter Notebook не найден"
+          fi
+
+          # 2. Проверка requirements.txt (ПК-9.2)
+          if [ -f "requirements.txt" ]; then
+            if grep -qi "streamlit" requirements.txt && grep -qi "plotly" requirements.txt && grep -qi "scikit-learn" requirements.txt; then
+              echo "has_reqs=true" >> $GITHUB_OUTPUT
+              echo "✅ requirements.txt содержит необходимые библиотеки"
+            else
+              echo "has_reqs=false" >> $GITHUB_OUTPUT
+              echo "❌ В requirements.txt не хватает streamlit, plotly или scikit-learn"
+            fi
+          else
+            echo "has_reqs=false" >> $GITHUB_OUTPUT
+            echo "❌ Файл requirements.txt отсутствует"
+          fi
+
+          # 3. Проверка использования классических ML-моделей (ПК-8.1, ПК-8.2)
+          if grep -rq "RandomForestRegressor\|LinearRegression" --include="*.py" --include="*.ipynb" .; then
+            echo "has_ml=true" >> $GITHUB_OUTPUT
+            echo "✅ Найдено использование классических ML-моделей"
+          else
+            echo "has_ml=false" >> $GITHUB_OUTPUT
+            echo "❌ Не найдено использование ML-моделей (RandomForestRegressor/LinearRegression)"
+          fi
+
+          # 4. Проверка использования визуализации Plotly (ПК-9.2)
+          if grep -rq "plotly\|go\.Scatter\|go\.Scatter3d" --include="*.py" --include="*.ipynb" .; then
+            echo "has_plotly=true" >> $GITHUB_OUTPUT
+            echo "✅ Найдено использование библиотеки Plotly для визуализации"
+          else
+            echo "has_plotly=false" >> $GITHUB_OUTPUT
+            echo "❌ Не найдено использование Plotly"
+          fi
+
+          # 5. Проверка наличия ключевых слов в отчете
+          if grep -rqi "цель\|вывод\|РТС\|отклонение" --include="*.md" --include="*.ipynb" .; then
+            echo "has_keywords=true" >> $GITHUB_OUTPUT
+            echo "✅ В отчете найдены ключевые термины"
+          else
+            echo "has_keywords=false" >> $GITHUB_OUTPUT
+            echo "⚠️ В отчете не найдены ключевые термины"
+          fi
+
+      - name: 💬 Формирование и публикация комментария в PR
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            ### 🤖 Результат автоматической проверки (Pre-flight Check)
+            
+            Здравствуйте, @${{ github.actor }}! 👋 
+            Ваш Pull Request был проверен автоматическим скриптом на базовое соответствие требованиям лабораторной работы.
+
+            #### 📊 Чек-лист проверки:
+            ${{ steps.checks.outputs.has_report == 'true' && '- [x] 📄 **Отчет/Notebook** присутствует' || '- [ ] 📄 **Отчет/Notebook** ОТСУТСТВУЕТ' }}
+            ${{ steps.checks.outputs.has_reqs == 'true' && '- [x] 📦 **Зависимости** (requirements.txt) корректны' || '- [ ] 📦 **Зависимости** некорректны или файл отсутствует' }}
+            ${{ steps.checks.outputs.has_ml == 'true' && '- [x] 🧠 **ML-модели** используются в коде' || '- [ ] 🧠 **ML-модели** не найдены в коде' }}
+            ${{ steps.checks.outputs.has_plotly == 'true' && '- [x] 📊 **Визуализация** (Plotly) реализована' || '- [ ] 📊 **Визуализация** (Plotly) не найдена' }}
+            ${{ steps.checks.outputs.has_keywords == 'true' && '- [x] 📝 **Структура отчета** содержит ключевые разделы' || '- [ ] 📝 **Структура отчета** требует доработки' }}
+
+            #### 💡 Рекомендации:
+            - Если какие-то пункты отмечены как `[ ]`, пожалуйста, внесите исправления и сделайте новый `git push`.
+            - Эта проверка является **предварительной**. Окончательную оценку выставит преподаватель после code review.
+            
+            *Удачи в изучении Генеративного ИИ! 🚀*
