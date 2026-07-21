@@ -1,102 +1,129 @@
-name: Автопроверка лабораторной работы
+name: 🤖 ИИ-Агент проверки (Hugging Face Free)
 
 on:
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
     types: [opened, synchronize, reopened]
 
 jobs:
-  check-lab-submission:
+  ai-review:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
       pull-requests: write
+      contents: read
     steps:
-      - name: Checkout кода
+      - name: 📥 Checkout кода
         uses: actions/checkout@v4
+
+      - name: ⚙️ Настройка Python
+        uses: actions/setup-python@v5
         with:
-          fetch-depth: 0
+          python-version: '3.10'
 
-      - name: Проверка структуры и кода
-        id: checks
+      - name: 📦 Установка зависимостей
+        run: pip install requests
+
+      - name: 🧠 Запуск ИИ-агента (Hugging Face Inference API)
+        env:
+          HF_API_TOKEN: ${{ secrets.HF_API_TOKEN }}
         run: |
-          # ВАЖНО: отключаем выход по ошибке, чтобы grep не ронял скрипт
-          set +e
-          
-          echo "Начинаем проверку..."
-          
-          # 1. Проверка отчета
-          REPORT_COUNT=$(find . -type f \( -name "report.md" -o -name "*.ipynb" \) | grep -v ".github" | wc -l)
-          if [ "$REPORT_COUNT" -gt 0 ]; then
-            echo "has_report=true" >> $GITHUB_OUTPUT
-            echo "Отчет найден"
-          else
-            echo "has_report=false" >> $GITHUB_OUTPUT
-            echo "Отчет не найден"
-          fi
-          
-          # 2. Проверка requirements.txt
-          if [ -f "requirements.txt" ]; then
-            if grep -qi "streamlit" requirements.txt && grep -qi "plotly" requirements.txt; then
-              echo "has_reqs=true" >> $GITHUB_OUTPUT
-              echo "requirements.txt корректен"
-            else
-              echo "has_reqs=false" >> $GITHUB_OUTPUT
-              echo "В requirements.txt не хватает streamlit или plotly"
-            fi
-          else
-            echo "has_reqs=false" >> $GITHUB_OUTPUT
-            echo "Файл requirements.txt отсутствует"
-          fi
-          
-          # 3. Проверка ML-моделей
-          ML_FOUND=$(grep -rl "RandomForestRegressor\|LinearRegression" --include="*.py" --include="*.ipynb" . 2>/dev/null | wc -l)
-          if [ "$ML_FOUND" -gt 0 ]; then
-            echo "has_ml=true" >> $GITHUB_OUTPUT
-            echo "ML-модели найдены"
-          else
-            echo "has_ml=false" >> $GITHUB_OUTPUT
-            echo "ML-модели не найдены"
-          fi
-          
-          # 4. Проверка Plotly
-          PLOTLY_FOUND=$(grep -rl "plotly\|go.Scatter\|go.Scatter3d" --include="*.py" --include="*.ipynb" . 2>/dev/null | wc -l)
-          if [ "$PLOTLY_FOUND" -gt 0 ]; then
-            echo "has_plotly=true" >> $GITHUB_OUTPUT
-            echo "Plotly найден"
-          else
-            echo "has_plotly=false" >> $GITHUB_OUTPUT
-            echo "Plotly не найден"
-          fi
-          
-          # 5. Ключевые слова (без русских символов для надёжности)
-          KEYWORDS_FOUND=$(grep -rli "RTS\|target\|deviation\|RandomForest\|Scatter" --include="*.md" --include="*.ipynb" . 2>/dev/null | wc -l)
-          if [ "$KEYWORDS_FOUND" -gt 0 ]; then
-            echo "has_keywords=true" >> $GITHUB_OUTPUT
-            echo "Ключевые слова найдены"
-          else
-            echo "has_keywords=false" >> $GITHUB_OUTPUT
-            echo "Ключевые слова не найдены"
-          fi
-          
-          set -e
+          cat << 'PYTHON_SCRIPT' > ai_checker.py
+          import os, sys, json, glob, requests
 
-      - name: Публикация комментария в PR
+          HF_TOKEN = os.environ.get("HF_API_TOKEN")
+          # Используем мощную и бесплатную модель Qwen 2.5, отлично знающую русский язык
+          MODEL_URL = "https://api-inference.huggingface.co/models/Qwen/Qwen2.5-7B-Instruct"
+
+          PROMPT = """Ты — строгий, но справедливый ассистент преподавателя курса "Генеративный искусственный интеллект и машинное обучение" (ЮФУ, каф. САПР им. В.М. Курейчика). 
+          Проверь отчет студента по лабораторной работе на соответствие Фонду оценочных средств (ФОС).
+
+          КРИТЕРИИ ПРОВЕРКИ (строго по ФОС):
+          1. СТРУКТУРА ОТЧЁТА: наличие разделов "Цель", "Ход выполнения", "Результаты", "Выводы".
+          2. КОМПЕТЕНЦИИ: явное указание индикаторов (ПК-7.1, ПК-7.2, ПК-8.1, ПК-8.2, ПК-9.2, ПК-14.1, ПК-14.4, ПК-14.5, ПК-14.6, ПК-24.1, ПК-24.3).
+          3. КОД И ПРАКТИКА: наличие фрагментов Python-кода, упоминание библиотек (Pandas, NumPy, Scikit-learn, PyTorch, Keras, Hugging Face, Plotly).
+          4. РЕЗУЛЬТАТЫ: описание метрик (accuracy, loss, F1, MSE), упоминание графиков или скриншотов.
+
+          ШКАЛА ОЦЕНИВАНИЯ (из ФОС):
+          - 5 баллов: задание выполнено правильно и без ошибок, подробный отчёт с пояснениями.
+          - 4 балла: задание выполнено правильно, незначительные ошибки, которые студент может объяснить.
+          - 3 балла: задание выполнено не полностью (≥80%), есть непонятые ошибки.
+          - Менее 3 баллов: выполнено менее 50% или отсутствует отчёт.
+
+          ОТВЕТЬ СТРОГО В СЛЕДУЮЩЕМ ФОРМАТЕ (Markdown, без лишнего текста в начале и конце):
+
+          ### 🤖 Оценка ИИ-ассистента (Hugging Face)
+
+          **Предварительная оценка:** [X]/5 баллов
+          **Статус:** ✅ Принято к проверке / ⚠️ Требует доработки / ❌ Не соответствует требованиям
+
+          #### 📊 Детальный разбор по ФОС:
+          - **Структура отчёта:** [краткий комментарий]
+          - **Компетенции:** [указал ли студент ПК-XX.X? Если нет, напиши, какие именно индикаторы из РПД нужно добавить]
+          - **Код и результаты:** [есть ли код и анализ результатов? Хватает ли глубины анализа?]
+
+          #### 💡 Рекомендации по улучшению:
+          1. [конкретный совет 1]
+          2. [конкретный совет 2]
+
+          *Примечание: это предварительная автоматическая оценка. Окончательный балл выставляет преподаватель после защиты.*
+          """
+
+          def get_report():
+              files = glob.glob("**/*report*.md", recursive=True) + glob.glob("**/*.ipynb", recursive=True)
+              files = [f for f in files if not f.startswith('.github')]
+              if not files: 
+                  return "Отчёт не найден (нет report.md или .ipynb)"
+              with open(files[0], 'r', encoding='utf-8') as f:
+                  if files[0].endswith('.ipynb'):
+                      nb = json.load(f)
+                      return "\n".join(["".join(c.get('source', [])) for c in nb.get('cells', []) if c.get('cell_type')=='markdown'])[:3000]
+                  return f.read()[:3000]
+
+          if not HF_TOKEN:
+              print("❌ Нет HF_API_TOKEN в Secrets")
+              sys.exit(1)
+
+          report = get_report()
+          print(f"📄 Найден отчёт, длина: {len(report)} символов")
+
+          headers = {
+              "Authorization": f"Bearer {HF_TOKEN}",
+              "Content-Type": "application/json"
+          }
+
+          payload = {
+              "messages": [
+                  {"role": "system", "content": PROMPT},
+                  {"role": "user", "content": f"Текст отчёта студента:\n\n{report}"}
+              ],
+              "temperature": 0.2,
+              "max_tokens": 1000
+          }
+
+          print("🧠 Отправка запроса в Hugging Face (модель Qwen 2.5)...")
+          response = requests.post(MODEL_URL, headers=headers, json=payload)
+          
+          if response.status_code == 200:
+              result = response.json()
+              # Hugging Face chat API возвращает ответ в структуре choices[0].message.content
+              ai_review = result['choices'][0]['message']['content']
+              with open("review.md", "w", encoding="utf-8") as f:
+                  f.write(ai_review)
+              print("✅ Проверка завершена успешно")
+          else:
+              print(f"⚠️ Ошибка API: {response.status_code}")
+              print(response.text)
+              # Если модель "холодная" (503), HF просит подождать. Мы создадим файл с предупреждением.
+              with open("review.md", "w", encoding="utf-8") as f:
+                  f.write("### ⚠️ Модель загружается\n\nHugging Face Inference API временно перегружен или модель \"просыпается\". Пожалуйста, нажмите **Re-run jobs** во вкладке Actions через 1-2 минуты.")
+              sys.exit(1)
+          PYTHON_SCRIPT
+
+          python ai_checker.py
+
+      - name: 💬 Публикация комментария в PR
         uses: peter-evans/create-or-update-comment@v4
         with:
           issue-number: ${{ github.event.pull_request.number }}
-          body: |
-            ### Результат автоматической проверки
-            
-            Здравствуйте, @${{ github.actor }}! Ваш Pull Request проверен.
-
-            #### Чек-лист:
-            ${{ steps.checks.outputs.has_report == 'true' && '- [x] Отчет/Notebook присутствует' || '- [ ] Отчет/Notebook ОТСУТСТВУЕТ' }}
-            ${{ steps.checks.outputs.has_reqs == 'true' && '- [x] Зависимости корректны' || '- [ ] Зависимости некорректны' }}
-            ${{ steps.checks.outputs.has_ml == 'true' && '- [x] ML-модели используются' || '- [ ] ML-модели не найдены' }}
-            ${{ steps.checks.outputs.has_plotly == 'true' && '- [x] Визуализация реализована' || '- [ ] Визуализация не найдена' }}
-            ${{ steps.checks.outputs.has_keywords == 'true' && '- [x] Ключевые термины присутствуют' || '- [ ] Ключевые термины отсутствуют' }}
-
-            Если пункты отмечены как `[ ]`, внесите исправления и сделайте новый `git push`.
-            
-            *Сгенерировано GitHub Actions для курса "Генеративный ИИ и МО"*
+          body-path: 'review.md'
+          reactions: 'eyes'
